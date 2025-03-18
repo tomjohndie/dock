@@ -1,6 +1,5 @@
 ###需要同步的镜像清单
-xiaoyaliu/alist
+xiaoyaliu/alist:latest
 redis:alpine
 nginx:latest
-mysql:8.4.4 
- 
+mysql:8.4.4
