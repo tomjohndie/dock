@@ -1,0 +1,145 @@
+name: hub-mirror-by-multiple
+
+on:
+  issues:
+    types:
+      - opened
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      QYWX_ROBOT_URL: "${{ secrets.QYWX_ROBOT_URL }}"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: "${{ secrets.DOCKER_XXX_TOKEN }}"
+
+      - name: Print image info to comment
+        id: print-image-info
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          TITLE: "${{ github.event.issue.title }}"
+          BODY: "${{ github.event.issue.body }}"
+        run: |
+          # 提取标题字段
+          REGISTRY=$(echo "$TITLE" | grep -oP '\[仓库地址\]:\K[^ ]+' | tr -d ' ')
+          REPOSITORY=$(echo "$TITLE" | grep -oP '\[空间名称\]:\K[^ ]+' | tr -d ' ')
+          ARCH=$(echo "$TITLE" | grep -oP '\[架构\]:\K[^ ]+' | tr -d ' ')
+          
+          echo "仓库地址：${REGISTRY}"
+          echo "仓库名称空间：${REPOSITORY}"
+          echo "架构：${ARCH}"
+          
+          # 提取镜像列表
+          reg_exp="^[a-zA-Z0-9/:\.\-]+$"
+          echo "####需要同步的镜像清单" > "image.txt"
+          IFS=$'\n'
+          for item in $(echo "$BODY" | grep -Eo '[a-zA-Z0-9/:\.\-]+'); do
+            if [[ "$item" =~ $reg_exp ]]; then
+              echo "$item" >> "image.txt"
+            fi
+          done
+          
+          # 验证镜像列表是否为空
+          if [[ $(cat image.txt | wc -l) -eq 0 ]]; then
+            echo "错误：没有有效的镜像名称"
+            exit 1
+          fi
+          
+          # 解析第一个镜像
+          IMAGE_LINE=$(head -n 1 image.txt)
+          IFS=':' read -r IMAGE_NAME TMP <<< "$IMAGE_LINE"
+          IMAGE_VERSION=$(echo "$TMP" | cut -d '/' -f1)  # 处理可能的路径（如 library/ubuntu:20.04）
+          NEW_NAME=${IMAGE_NAME##*/}  # 提取镜像名称最后一部分（如 ubuntu）
+          
+          # 输出调试信息
+          echo "DEBUG: 第一个镜像：$IMAGE_LINE"
+          echo "DEBUG: 镜像名称：$IMAGE_NAME"
+          echo "DEBUG: 版本：$IMAGE_VERSION"
+          echo "DEBUG: 新名称：$NEW_NAME"
+          
+          # 写入输出变量
+          echo "image_name=${IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "image_version=${IMAGE_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "new_name=${NEW_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "target_registry=${REGISTRY}" >> "${GITHUB_OUTPUT}"
+          echo "target_repository=${REPOSITORY}" >> "${GITHUB_OUTPUT}"
+          echo "target_arch=${ARCH}" >> "${GITHUB_OUTPUT}"
+          
+          # 发送评论到 issue
+          gh issue comment "${{ github.event.issue.html_url }}" -b "$(echo -e "\n镜像仓库：${REGISTRY}\n仓库名称空间：${REPOSITORY}\n架构：${ARCH}\n$(cat image.txt)\n")"
+          gh issue comment "${{ github.event.issue.html_url }}" -b "镜像 ${IMAGE_NAME} 同步中...[详情请查看](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+      - name: Login to Docker Registry
+        env:
+          DOCKER_USERNAME: "${{ secrets.DOCKER_USERNAME }}"
+          DOCKER_PASSWORD: "${{ secrets.DOCKER_PASSWORD }}"
+          TARGET_REGISTRY: "${{ steps.print-image-info.outputs.target_registry }}"
+        run: |
+          echo "登录目标仓库: $TARGET_REGISTRY"
+          docker login -u "$DOCKER_USERNAME" -p "$DOCKER_PASSWORD" "$TARGET_REGISTRY"
+
+      - name: Pull, tag, and push Docker image
+        env:
+          IMAGE_NAME: "${{ steps.print-image-info.outputs.image_name }}"
+          IMAGE_VERSION: "${{ steps.print-image-info.outputs.image_version }}"
+          NEW_NAME: "${{ steps.print-image-info.outputs.new_name }}"
+          TARGET_REGISTRY: "${{ steps.print-image-info.outputs.target_registry }}"
+          TARGET_REPOSITORY: "${{ steps.print-image-info.outputs.target_repository }}"
+          TARGET_ARCH: "${{ steps.print-image-info.outputs.target_arch }}"
+        run: |
+          set -x  # 开启调试模式
+          echo "DEBUG: 镜像名称：$IMAGE_NAME，版本：$IMAGE_VERSION，架构：$TARGET_ARCH"
+          
+          if [ -n "$TARGET_ARCH" ]; then
+            docker pull --platform "$TARGET_ARCH" "$IMAGE_NAME:$IMAGE_VERSION"
+          else
+            docker pull "$IMAGE_NAME:$IMAGE_VERSION"
+          fi
+          
+          docker tag "$IMAGE_NAME:$IMAGE_VERSION" "$TARGET_REGISTRY/$TARGET_REPOSITORY/$NEW_NAME:$IMAGE_VERSION"
+          docker push "$TARGET_REGISTRY/$TARGET_REPOSITORY/$NEW_NAME:$IMAGE_VERSION"
+
+      - name: qyweixin send message
+        if: ${{ env.QYWX_ROBOT_URL != '' }}
+        uses: chf007/action-wechat-work@master
+        env:
+          WECHAT_WORK_BOT_WEBHOOK: "${{ secrets.QYWX_ROBOT_URL }}"
+          IMAGE_URL: "${{ steps.print-image-info.outputs.target_registry }}/${{ steps.print-image-info.outputs.target_repository }}/${{ steps.print-image-info.outputs.new_name }}:${{ steps.print-image-info.outputs.image_version }}"
+        with:
+          msgtype: markdown
+          content: |
+            # 镜像同步成功
+        ${IMAGE_URL}
+        ```
+
+  - name: Close issue
+    env:
+      GH_TOKEN: "${{ github.token }}"
+      TARGET_REGISTRY: "${{ steps.print-image-info.outputs.target_registry }}"
+      TARGET_REPOSITORY: "${{ steps.print-image-info.outputs.target_repository }}"
+      NEW_NAME: "${{ steps.print-image-info.outputs.new_name }}"
+      IMAGE_VERSION: "${{ steps.print-image-info.outputs.image_version }}"
+    run: |
+      gh issue comment "${{ github.event.issue.html_url }}" -b "$(echo -e "镜像同步完成 ${NEW_NAME} ，新的镜像 ${TARGET_REGISTRY}/${TARGET_REPOSITORY}/${NEW_NAME}:${IMAGE_VERSION}\n\n快速拉取命令，Docker客户端\n\`\`\`sh\ndocker image pull ${TARGET_REGISTRY}/${TARGET_REPOSITORY}/${NEW_NAME}:${IMAGE_VERSION}\n\`\`\`\n\nContainerd客户端拉取命令\n\`\`\`sh\nctr -n k8s.io image pull ${TARGET_REGISTRY}/${TARGET_REPOSITORY}/${NEW_NAME}:${IMAGE_VERSION}\n\`\`\`\n")"
+      gh issue edit "${{ github.event.issue.html_url }}" --add-label "succeeded" -b "IMAGE SYNC"
+      gh issue close "${{ github.event.issue.html_url }}" --reason "completed"
+
+  - name: Failed Sync and Close issue
+    if: failure()
+    env:
+      GH_TOKEN: "${{ github.token }}"
+      IMAGE_NAME: "${{ steps.print-image-info.outputs.image_name }}"
+      NEW_NAME: "${{ steps.print-image-info.outputs.new_name }}"
+      TARGET_REGISTRY: "${{ steps.print-image-info.outputs.target_registry }}"
+      TARGET_REPOSITORY: "${{ steps.print-image-info.outputs.target_repository }}"
+    run: |
+      gh issue comment "${{ github.event.issue.html_url }}" -b "镜像 ${IMAGE_NAME} 同步失败...[详情请查看](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})，请检查 image参数，如果还需要同步，请重新提交正确的issue"
+      gh issue edit "${{ github.event.issue.html_url }}" --add-label "failure" -b "IMAGE SYNC"
+      gh issue close "${{ github.event.issue.html_url }}" --reason "not planned"
