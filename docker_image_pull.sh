@@ -56,12 +56,31 @@ jobs:
           reg_exp="^[a-z0-9\/\:\.\-]+$"
           echo "###需要同步的镜像清单" >"image.txt"
           IFS=$'\n'
-          for item in ${BODY}; do
-            item="$(echo "${item}" | awk '{gsub(/ /,"",$0);print $0}' | awk '{print $1}')"
-            if [[ "${item}" =~ ${reg_exp} ]]; then
-              echo "${item}" >>"image.txt"
+#          for item in ${BODY}; do
+#            item="$(echo "${item}" | awk '{gsub(/ /,"",$0);print $0}' | awk '{print $1}')"
+#            if [[ "${item}" =~ ${reg_exp} ]]; then
+#              echo "${item}" >>"image.txt"
+#            fi
+#          done
+          # 清除空行、空格和制表符，并过滤合法镜像名称
+          reg_exp="^[a-zA-Z0-9\/\:\.\-]+$"  # 扩展正则表达式允许大写字母
+          echo "####需要同步的镜像清单" > "image.txt"
+          while IFS= read -r line; do
+            # 删除行首行尾空格、中间空格及特殊字符（如 \r）
+            clean_line=$(echo "${line}" | tr -d '\r' | awk '{gsub(/^[ \t]+|[ \t]+$/, ""); gsub(/ /, "", $0); print}')
+            # 检查非空且符合正则表达式
+            if [[ -n "${clean_line}" ]] && [[ "${clean_line}" =~ ${reg_exp} ]]; then
+              # 提取镜像名和版本（示例：busybox:latest -> busybox 和 latest）
+              image_name=$(echo "${clean_line}" | awk -F ":" '{print $1}')
+              image_version=$(echo "${clean_line}" | awk -F ":" '{print $2}')
+              # 写入 image.txt
+              echo "${clean_line}" >> "image.txt"
+              # 设置变量（假设只处理第一个有效镜像）
+              echo "IMAGE_NAME=${image_name}" >> "${GITHUB_OUTPUT}"
+              echo "IMAGE_VERSION=${image_version}" >> "${GITHUB_OUTPUT}"
+              break  # 如果只需要处理第一个镜像，则跳出循环
             fi
-          done
+          done <<< "${BODY}"           
           IMAGE_TXT="$(cat image.txt)"
           gh issue comment "${{ github.event.issue.html_url }}" -b "$(echo -e "\n镜像仓库：${TARGET_REGISTRY}\n仓库名称空间：${TARGET_REPOSITORY}\n架构：${TARGET_ARCH}\n\`\`\`sh\n${IMAGE_TXT}\n\`\`\`\n")"
           gh issue comment "${{ github.event.issue.html_url }}" -b "镜像同步中...[详情请查看](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) 如果还需要同步, 请重新提交issue"
