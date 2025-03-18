@@ -3,3 +3,4 @@ xiaoyaliu/alist
 redis:alpine
 nginx:latest
 mysql:8.4.4
+ 
