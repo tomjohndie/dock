@@ -1,5 +1,2 @@
-###需要同步的镜像清单
-xiaoyaliu/alist:latest
-redis:alpine
 nginx:latest
-mysql:8.4.4
+library/ubuntu:20.04
