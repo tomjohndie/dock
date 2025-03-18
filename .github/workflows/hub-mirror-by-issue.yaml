@@ -1,5 +1,5 @@
 =====================================================
-name: hub-mirror-by-issue
+name: hub-mirror-by-multiple
  
 on:
   issues:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    if: contains(github.event.issue.labels.*.name, 'hub-mirror')
+    if: contains(github.event.issue.labels.*.name, 'hub-mirror-multiple')
     env:
       QYWX_ROBOT_URL: "${{ secrets.QYWX_ROBOT_URL }}"
     steps:
